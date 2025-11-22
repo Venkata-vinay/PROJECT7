@@ -1,0 +1,1405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VitaCare AI: The Ultimate Virtual Health Companion</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;700&display=swap" rel="stylesheet">
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            onAuthStateChanged,
+            GoogleAuthProvider,
+            signInWithPopup,
+            signInWithEmailAndPassword,
+            createUserWithEmailAndPassword, 
+            setPersistence,
+            inMemoryPersistence 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Configuration Setup (Replace with your actual Firebase config in a real app) ---
+        const firebaseConfig = { 
+            apiKey: "YOUR_API_KEY", 
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com", 
+            projectId: "YOUR_PROJECT_ID", 
+            storageBucket: "YOUR_PROJECT_ID.appspot.com", 
+            messagingSenderId: "YOUR_MESSAGING_SENDER_ID", 
+            appId: "YOUR_APP_ID"
+        };
+        // Global variables for Firebase access
+        window.isAuthReady = false;
+        window.auth = null;
+        window.db = null;
+        window.userId = null;
+        window.useLocalStorage = false; 
+
+        // Initial setup function
+        window.initFirebaseApp = () => {
+            const isConfigPlaceholder = Object.values(firebaseConfig).some(val => val.includes('YOUR_'));
+            if (isConfigPlaceholder) {
+                console.warn("Firebase configuration is missing/placeholder. Switching to Local Storage Mode for features like Medication Manager.");
+                window.useLocalStorage = true;
+                window.isAuthReady = true;
+                window.userId = 'LOCAL_MODE_USER';
+                // Update Auth UI to reflect local mode (if needed)
+                return;
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                window.db = getFirestore(app);
+                window.auth = getAuth(app);
+                
+                // Set persistence to in-memory for ephemeral canvas environment
+                setPersistence(window.auth, inMemoryPersistence).catch((error) => {
+                    console.error("Persistence setting failed:", error);
+                });
+
+                onAuthStateChanged(window.auth, (user) => {
+                    window.isAuthReady = true;
+                    if (user) {
+                        window.userId = user.uid;
+                        // Successfully logged in (for index (1).html success screen)
+                        window.showSuccessScreen ? window.showSuccessScreen(user, true) : null;
+                        // Start listening for medications
+                        window.listenForMedications ? window.listenForMedications() : null;
+                    } else {
+                        window.userId = null;
+                        // Show login form (for index (1).html)
+                        window.showLoginForm ? window.showLoginForm() : null;
+                    }
+                    // Re-enable buttons if they were disabled waiting for auth
+                    window.toggleLoading ? window.toggleLoading(false) : null;
+                });
+            } catch (error) {
+                console.error("Firebase Initialization Error:", error);
+                // Fallback to local mode on fatal Firebase error
+                window.useLocalStorage = true;
+                window.isAuthReady = true;
+                window.userId = 'LOCAL_MODE_USER';
+            }
+        };
+
+        // Export necessary functions for global access
+        window.GoogleAuthProvider = GoogleAuthProvider;
+        window.signInWithPopup = signInWithPopup;
+        window.signInWithEmailAndPassword = signInWithEmailAndPassword;
+        window.createUserWithEmailAndPassword = createUserWithEmailAndPassword;
+        window.collection = collection;
+        window.addDoc = addDoc;
+        window.query = query;
+        window.orderBy = orderBy;
+        window.onSnapshot = onSnapshot;
+        window.deleteDoc = deleteDoc;
+        window.doc = doc;
+    </script>
+
+    <style>
+        /* --- CONSOLIDATED CSS STYLES --- */
+        
+        /* 1. Base/Reset (from welcome.html & index (8).html) */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+        }
+
+        /* Set base font for most elements */
+        body {
+            font-family: 'Inter', sans-serif;
+            color: #1e3a8a; /* Default Text Color (index (8).html) */
+            /* Background will be managed by the 3D canvas */
+            margin: 0;
+            overflow-x: hidden; /* Prevent horizontal scroll */
+            background-color: #f7f9fb; /* Default fallback color */
+            min-height: 100vh;
+            position: relative;
+        }
+        
+        /* Three.js Canvas Styles (from index (8).html) */
+        #three-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: -10;
+        }
+        
+        /* Content Visibility Toggles */
+        .app-section {
+            display: none;
+            position: relative; /* Ensure sections are above 3D background */
+            z-index: 5;
+        }
+        
+        .app-section.active {
+            display: block;
+        }
+        
+        /* Section Scroll Animation (from index (8).html) */
+        .content-section {
+            background-color: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+            border-radius: 1rem;
+            margin-bottom: 2rem;
+            opacity: 0; 
+            transform: translateY(30px);
+            transition: opacity 0.8s ease-out, transform 0.8s ease-out;
+        }
+        .content-section.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Frosted Glass Effect (from index (1).html) */
+        .frosted-glass {
+            background-color: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 0 40px rgba(34, 197, 94, 0.2);
+        }
+        
+        /* Button Styles (from index (1).html and virtual doctor.html) */
+        .auth-btn {
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+        .auth-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(34, 197, 94, 0.3), 0 4px 6px -4px rgba(34, 197, 94, 0.3);
+        }
+        #virtualdoctor-content #submitBtn {
+            background-image: linear-gradient(to right, #3b82f6 0%, #2563eb 100%);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+            border: none;
+        }
+        #virtualdoctor-content #submitBtn:hover {
+            background-image: linear-gradient(to right, #2563eb 0%, #1e40af 100%);
+            box-shadow: 0 5px 20px rgba(59, 130, 246, 0.4);
+        }
+
+        /* Chatbot Styles (from chatbot.html) */
+        #chatbot-content .chat-bubble-user {
+            background-color: #3b82f6; 
+            color: white;
+            border-radius: 1rem 1rem 0.25rem 1rem;
+        }
+        #chatbot-content .chat-bubble-ai {
+            background-color: rgba(45, 55, 72, 0.85); 
+            color: #f7f9fb; 
+            border-radius: 1rem 1rem 1rem 0.25rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+        #chatbot-content .chat-container {
+            max-height: 55vh; 
+            overflow-y: auto; 
+            -ms-overflow-style: none; /* IE and Edge */
+            scrollbar-width: none; /* Firefox */
+        }
+        #chatbot-content .chat-container::-webkit-scrollbar {
+            display: none;
+        }
+
+        /* Medication Manager Styles (from medication manager (2).html) */
+        #medication-content .gradient-bg {
+            background: linear-gradient(135deg, #059669 0%, #34d399 100%);
+        }
+        #medication-content .card {
+            background-color: #ffffff;
+            border-radius: 1.5rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+            transition: all 0.3s ease-in-out;
+            position: relative; 
+            z-index: 10; 
+        }
+
+        /* Virtual Doctor Triage Score (from virtual doctor.html) */
+        #virtualdoctor-content .triage-score-display {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem 1.25rem;
+            border-radius: 0.75rem; 
+            margin-bottom: 1.5rem; 
+            font-weight: 700; 
+            gap: 0.75rem;
+        }
+        #virtualdoctor-content .score-red { border: 2px solid #f87171; background-color: #fef2f2; color: #b91c1c; }
+        #virtualdoctor-content .score-yellow { border: 2px solid #fbbf24; background-color: #fffbeb; color: #b45309; }
+        #virtualdoctor-content .score-green { border: 2px solid #34d399; background-color: #ecfdf5; color: #065f46; }
+        
+        /* Spinner/Loading Animation */
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #fff;
+            border-radius: 50%;
+            width: 1.5rem;
+            height: 1.5rem;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .loading-dots span {
+            animation: bounce 1s infinite;
+        }
+        .loading-dots span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        .loading-dots span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+        @keyframes bounce {
+            0%, 80%, 100% {
+                transform: translateY(0);
+            }
+            40% {
+                transform: translateY(-10px);
+            }
+        }
+
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <canvas id="three-bg"></canvas>
+
+    <header class="sticky top-0 z-20 w-full bg-white/95 backdrop-blur-sm shadow-md">
+        <div class="max-w-7xl mx-auto p-4 flex justify-between items-center">
+            <div class="text-2xl font-black text-blue-800">VitaCare AI</div>
+            <nav class="space-x-4 md:space-x-6 text-gray-600 font-semibold text-sm md:text-base">
+                <a href="#" class="hover:text-emerald-500 transition" onclick="showSection('index8-content')">Home</a>
+                <a href="#" class="hover:text-emerald-500 transition" onclick="showSection('auth-section')">Login/Auth</a>
+                <a href="#" class="hover:text-emerald-500 transition" onclick="showSection('corefeature-content')">Features</a>
+                <a href="#" class="hover:text-emerald-500 transition" onclick="showSection('chatbot-content')">AI Chatbot</a>
+                <a href="#" class="hover:text-emerald-500 transition" onclick="showSection('virtualdoctor-content')">Virtual Triage</a>
+                <a href="#" class="hover:text-emerald-500 transition" onclick="showSection('medication-content')">Med Manager</a>
+            </nav>
+        </div>
+    </header>
+
+    <div id="index8-content" class="app-section active">
+        <main class="relative z-10">
+            <section id="hero" class="hero-section text-white pt-16 pb-20 md:pt-24 md:pb-32 flex items-center justify-center bg-gray-900/95">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col lg:flex-row items-center justify-between">
+                    <div class="lg:w-1/2 text-center lg:text-left">
+                        <span class="inline-block text-emerald-400 text-sm font-bold uppercase tracking-widest mb-2">Future of Healthcare</span>
+                        <h1 class="text-5xl md:text-6xl lg:text-7xl font-extrabold mb-4 leading-tight text-white">
+                            Your <span class="text-emerald-400">Smart</span> Virtual Doctor
+                        </h1>
+                        <p class="text-xl text-gray-300 mb-8 max-w-lg lg:max-w-none mx-auto lg:mx-0">
+                            Instant, intelligent health analysis and personalized guidance powered by advanced AI and 3D visualization.
+                        </p>
+                        <div class="flex flex-col sm:flex-row justify-center lg:justify-start space-y-4 sm:space-y-0 sm:space-x-4">
+                            <button onclick="showSection('auth-section')" class="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-8 rounded-full shadow-xl transition duration-300 transform hover:scale-105 flex items-center justify-center tracking-wider">
+                                Get Started
+                            </button>
+                            <a href="#" onclick="showSection('virtualdoctor-content')" class="bg-transparent border-2 border-emerald-500 text-emerald-500 font-bold py-3 px-8 rounded-full hover:bg-emerald-500 hover:text-white transition duration-300 flex items-center justify-center">
+                                Try Triage Demo
+                            </a>
+                        </div>
+                    </div>
+                    <div class="hidden lg:block lg:w-1/2 mt-12 lg:mt-0 flex justify-center">
+                        <div class="w-full max-w-sm h-[600px] bg-white rounded-3xl p-6 shadow-[0_20px_50px_rgba(0,0,0,0.5)] transform rotate-3 hover:rotate-0 transition duration-500 border-4 border-emerald-400">
+                             <div class="h-full w-full bg-gray-100 rounded-2xl flex items-center justify-center text-gray-500 text-lg font-semibold">
+                                VitaCare App Interface
+                             </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <div class="max-w-7xl mx-auto p-4 sm:p-8">
+                <section id="features" class="content-section p-8 md:p-12 mt-10">
+                    <h2 class="text-4xl font-extrabold text-center text-blue-800 mb-4">Core Benefits</h2>
+                    <p class="text-center text-lg text-gray-600 mb-10 max-w-3xl mx-auto">
+                        VitaCare AI acts as your personal, non-anxious triage specialist, providing instant context and reducing the stress of unknown symptoms. We empower you to make informed decisions about your health.
+                    </p>
+                    <div class="grid md:grid-cols-3 gap-8 text-blue-900">
+                        <div class="p-8 rounded-2xl border border-blue-100 bg-white shadow-lg text-center">
+                            <svg class="w-12 h-12 mx-auto text-blue-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v14L9 19zm0 0l-4-2.222M9 19v-6m0 6h.01M5 16.778V4.778a2 2 0 012-2h10a2 2 0 012 2v12a2 2 0 01-2 2h-4a2 2 0 00-2 2z"></path></svg>
+                            <h3 class="text-2xl font-bold mb-2">Instant Triage</h3>
+                            <p class="text-gray-600">Enter your symptoms and get an immediate urgency score (Red, Yellow, Green) with recommended next steps.</p>
+                        </div>
+                        <div class="p-8 rounded-2xl border border-blue-100 bg-white shadow-lg text-center">
+                            <svg class="w-12 h-12 mx-auto text-emerald-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7v2m0 0v2m0-2v-2m0 2H12a2 2 0 00-2 2v2a2 2 0 002 2z"></path></svg>
+                            <h3 class="text-2xl font-bold mb-2">Voice & Audio Output</h3>
+                            <p class="text-gray-600">Communicate using voice input, and listen to the AI doctor's complete diagnosis via high-quality audio readout.</p>
+                        </div>
+                        <div class="p-8 rounded-2xl border border-blue-100 bg-white shadow-lg text-center">
+                            <svg class="w-12 h-12 mx-auto text-indigo-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <h3 class="text-2xl font-bold mb-2">Medication Safety</h3>
+                            <p class="text-gray-600">Analyze your current medications for potential major or moderate drug-drug interactions in seconds.</p>
+                        </div>
+                    </div>
+                </section>
+                
+                <section id="welcome-message-placeholder" class="content-section p-8 md:p-12 mt-10 text-center">
+                    <h2 class="text-3xl font-extrabold text-blue-800 mb-4">A Note on Elegant Design</h2>
+                    <p class="text-lg text-gray-600 mb-6 max-w-xl mx-auto">
+                        This application features a custom-designed, elegant 3D particle background for a modern, high-tech user experience. The particle systems are designed to be subtle, calming, and visually engaging, providing a unique look to the entire VitaCare suite.
+                    </p>
+                    <a href="#" onclick="showSection('auth-section')" class="inline-block bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300">
+                        Proceed to Login
+                    </a>
+                </section>
+
+                <section id="how-it-works" class="content-section p-8 md:p-12 text-center bg-blue-50">
+                    <h2 class="text-4xl font-extrabold text-center text-blue-800 mb-10">Our Triage Process</h2>
+                    <ol class="grid md:grid-cols-3 gap-8 text-blue-900 list-none text-left">
+                        <li class="p-6 bg-white rounded-xl shadow-md border-t-4 border-emerald-400">
+                            <span class="text-4xl font-black text-emerald-400 block mb-3">1.</span>
+                            <h3 class="text-xl font-bold mb-2">Describe Symptoms</h3>
+                            <p class="text-gray-600 text-sm">Input your symptoms via text or voice to the Virtual Doctor module.</p>
+                        </li>
+                        <li class="p-6 bg-white rounded-xl shadow-md border-t-4 border-blue-400">
+                            <span class="text-4xl font-black text-blue-400 block mb-3">2.</span>
+                            <h3 class="text-xl font-bold mb-2">AI Analysis</h3>
+                            <p class="text-gray-600 text-sm">The AI processes the input against a vast medical knowledge base to generate a structured analysis.</p>
+                        </li>
+                        <li class="p-6 bg-white rounded-xl shadow-md border-t-4 border-indigo-400">
+                            <span class="text-4xl font-black text-indigo-400 block mb-3">3.</span>
+                            <h3 class="text-xl font-bold mb-2">Get Actionable Triage</h3>
+                            <p class="text-gray-600 text-sm">Receive a clear Triage Score (Red, Yellow, Green) and a concise, actionable recommendation.</p>
+                        </li>
+                    </ol>
+                </section>
+
+            </div>
+        </main>
+    </div>
+    
+    <div id="auth-section" class="app-section min-h-screen flex items-center justify-center p-4 relative z-10"> 
+        <div id="auth-ui" class="w-full max-w-xl">
+            <div id="login-form-container" class="frosted-glass max-w-sm w-full p-8 md:p-10 rounded-xl shadow-2xl transition-all duration-500">
+                <div class="flex items-center space-x-2 mb-8 justify-center">
+                    <svg class="w-8 h-8 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c1.657 0 3 .895 3 2s-1.343 2-3 2v2m0-6V8m0 0V4m-2 4h4m-4 8h4m-4 0v4m4-4h4m-4 0v4m0-4v-4m-4 0v4m0-4h-4m-4 0h4m-4 0v4m0-4v-4m4 0v4m0-4h4m-4 0h4m-4 0v4m0-4v-4m-4 0h4"></path></svg>
+                    <h1 id="auth-title" class="text-3xl font-bold text-white">Login to VitaDoc</h1>
+                </div>
+
+                <form id="auth-form" onsubmit="window.handlePrimaryAuth(); return false;" class="space-y-6">
+                    <div>
+                        <label for="email" class="block text-sm font-medium text-gray-300 mb-2">Email Address</label>
+                        <input type="email" id="email" required autocomplete="username"
+                            class="w-full p-3 bg-white/10 text-white border border-green-400/50 rounded-lg placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-400 transition duration-300">
+                    </div>
+                    <div>
+                        <label for="password" class="block text-sm font-medium text-gray-300 mb-2">Password</label>
+                        <input type="password" id="password" required autocomplete="current-password"
+                            class="w-full p-3 bg-white/10 text-white border border-green-400/50 rounded-lg placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-400 transition duration-300">
+                    </div>
+
+                    <button id="primary-auth-btn" type="submit" disabled
+                        class="auth-btn w-full flex items-center justify-center py-3 bg-green-500 hover:bg-green-600 text-white font-bold rounded-lg shadow-xl focus:outline-none focus:ring-2 focus:ring-green-400 transition duration-300">
+                        <span id="primary-auth-btn-text">Sign In</span>
+                        <div id="primary-auth-spinner" class="spinner ml-3 hidden"></div>
+                    </button>
+                </form>
+
+                <div class="relative my-6">
+                    <div class="absolute inset-0 flex items-center">
+                        <div class="w-full border-t border-gray-700"></div>
+                    </div>
+                    <div class="relative flex justify-center text-sm">
+                        <span class="px-2 bg-gray-900 text-gray-400">OR</span>
+                    </div>
+                </div>
+
+                <button id="google-btn" onclick="window.signInWithGoogle()" disabled
+                    class="auth-btn w-full flex items-center justify-center py-3 bg-white hover:bg-gray-100 text-gray-800 font-bold rounded-lg shadow-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-300">
+                    <svg class="w-5 h-5 mr-3" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill="#FFC107" d="M43.6 20.4H24v7.2h10.32a12.03 12.03 0 01-5.12 7.85l-7.22 5.56a23.96 23.96 0 0013.9-5.11l4.18-3.23z"/><path fill="#FF3D00" d="M24 39.4c-6.83 0-12.63-3.66-15.89-9.14l7.22-5.56a14.02 14.02 0 018.67 3.23l4.18 3.23a23.96 23.96 0 00-4.18 3.23z"/><path fill="#4CAF50" d="M8.11 29.86a14.02 14.02 0 010-11.72l-7.22-5.56a23.96 23.96 0 000 22.84l7.22-5.56z"/><path fill="#1976D2" d="M24 8.6c3.08 0 5.86 1.05 8.04 2.87l5.96-5.96a23.96 23.96 0 00-13.9-5.11c-6.83 0-12.63 3.66-15.89 9.14l7.22 5.56a14.02 14.02 0 018.67-3.23z"/></svg>
+                    <span id="google-btn-text">Sign in with Google</span>
+                    <div id="google-btn-spinner" class="spinner spinner-dark ml-3 hidden"></div>
+                </button>
+
+                <p id="auth-message" class="text-sm mt-4 text-center text-gray-400">
+                    Email/Password Test (Login Only): <b>test@vitadoc.com</b> / <b>password123</b>
+                </p>
+
+                <p id="switch-auth-mode" class="text-sm mt-6 text-center text-gray-500">
+                    New patient? <a href="#" onclick="window.toggleAuthMode('signup'); return false;" class="font-bold text-green-400 hover:text-green-300">Create an Account</a>
+                </p>
+            </div>
+
+            <div id="welcome-message" class="hidden text-center p-8 bg-green-500/10 rounded-xl frosted-glass max-w-lg w-full transition-all duration-500 mt-8">
+                <h2 id="welcome-title" class="text-4xl font-bold mb-4 text-green-300">Access Granted</h2>
+                <p class="text-xl text-gray-200">Welcome back to VitaDoc, your virtual care platform.</p>
+                <p id="welcome-subtitle" class="text-lg mt-3 mb-6 text-gray-400">You are securely logged in.</p>
+                
+                <button onclick="showSection('index8-content')"
+                        class="auth-btn w-full flex items-center justify-center py-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-lg shadow-xl focus:outline-none focus:ring-2 focus:ring-blue-400 transition duration-300">
+                        Continue to Dashboard
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="corefeature-content" class="app-section">
+        <div id="three-container" class="absolute inset-0 -z-10 bg-gradient-to-br from-[#100f20] to-[#080718]"></div>
+        <div class="content-overlay py-12 md:py-24">
+            <header class="text-center max-w-4xl mx-auto mb-16 px-4">
+                <h1 class="text-6xl font-extrabold text-white mb-4">VitaCare <span class="text-cyan-400">AI</span></h1>
+                <p class="text-xl text-gray-300">Redefining access to health guidance with intelligence and elegance.</p>
+            </header>
+        
+            <section class="max-w-6xl mx-auto pb-16 px-4">
+                <h2 class="text-4xl font-extrabold text-center text-cyan-400 mb-12">Core Intelligent Features</h2>
+                <div class="grid md:grid-cols-3 gap-8">
+                    <div class="feature-card bg-gray-900/90 p-6 rounded-2xl border-t-4 border-cyan-500 flex flex-col justify-between">
+                        <div>
+                            <div class="text-cyan-400 mb-4">
+                                <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.61 5.61a12 12 0 11-17.21 0 12 12 0 0117.21 0z"></path></svg>
+                            </div>
+                            <h3 class="text-2xl font-bold text-white mb-3">Virtual Doctor Assistance</h3>
+                            <p class="text-gray-400 text-base">Instant analysis of symptoms, providing a differential diagnosis list and a clear, actionable triage score (RED, YELLOW, GREEN).</p>
+                        </div>
+                        <a href="#" onclick="showSection('virtualdoctor-content')" class="mt-4 text-cyan-400 hover:text-cyan-300 font-semibold flex items-center text-sm">
+                            Launch Triage <svg class="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                        </a>
+                    </div>
+
+                    <div class="feature-card bg-gray-900/90 p-6 rounded-2xl border-t-4 border-indigo-500 flex flex-col justify-between">
+                        <div>
+                            <div class="text-indigo-400 mb-4">
+                                <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-4 4V3m-6 8h12M6 18h12M6 21h12"></path></svg>
+                            </div>
+                            <h3 class="text-2xl font-bold text-white mb-3">Medication Interaction Checker</h3>
+                            <p class="text-gray-400 text-base">Securely track your medication list. Our AI automatically checks for major and moderate drug-drug interaction risks.</p>
+                        </div>
+                        <a href="#" onclick="showSection('medication-content')" class="mt-4 text-indigo-400 hover:text-indigo-300 font-semibold flex items-center text-sm">
+                            Manage Medications <svg class="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                        </a>
+                    </div>
+
+                    <div class="feature-card bg-gray-900/90 p-6 rounded-2xl border-t-4 border-green-500 flex flex-col justify-between">
+                        <div>
+                            <div class="text-green-400 mb-4">
+                                <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a1.994 1.994 0 01-1.414-.586M17 8V4a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2h4v4l4-4h4a2 2 0 002-2v-4a2 2 0 00-2-2z"></path></svg>
+                            </div>
+                            <h3 class="text-2xl font-bold text-white mb-3">Health & Wellness Chatbot</h3>
+                            <p class="text-gray-400 text-base">A conversational AI (Vita AI) for quick questions, general wellness tips, and information retrieval outside of a diagnosis context.</p>
+                        </div>
+                        <a href="#" onclick="showSection('chatbot-content')" class="mt-4 text-green-400 hover:text-green-300 font-semibold flex items-center text-sm">
+                            Start Chatting <svg class="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                        </a>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+    
+    <div id="chatbot-content" class="app-section">
+        <div class="min-h-screen flex items-center justify-center p-4 md:p-8">
+            <div class="w-full max-w-xl bg-gray-900/90 backdrop-blur-md rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[80vh]">
+                <div class="p-4 border-b border-gray-700 flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <span class="relative flex h-3 w-3">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-3 w-3 bg-teal-500"></span>
+                        </span>
+                        <h2 class="text-xl font-bold text-white">Vita AI Chatbot</h2>
+                    </div>
+                    <button class="text-gray-400 hover:text-white transition" onclick="showSection('index8-content')" title="Close Chat">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+    
+                <div id="chat-history" class="chat-container flex-grow p-4 md:p-6 space-y-4">
+                    <div class="flex justify-start">
+                        <div class="chat-bubble-ai p-3 max-w-xs md:max-w-md">
+                            <p class="font-semibold text-teal-400">Assistant</p> 
+                            <p>Welcome to Vita AI! I am here to assist with your general health and wellness questions. **I cannot provide medical diagnosis or treatment advice.**</p>
+                        </div>
+                    </div>
+                </div>
+    
+                <div class="p-4 border-t border-gray-700 flex space-x-3">
+                    <input type="text" id="user-input-chat" placeholder="Ask a general health question..." 
+                           class="flex-grow p-3 bg-gray-800 text-white border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                           autocomplete="off">
+                    <button id="send-button" onclick="window.sendMessage()" 
+                            class="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-lg flex items-center justify-center transition disabled:bg-gray-500">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        <div id="loading-indicator" class="spinner w-5 h-5 ml-2 hidden"></div>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="virtualdoctor-content" class="app-section min-h-screen flex items-start justify-center p-4 md:p-8 bg-gradient-to-br from-blue-50 to-white">
+        <div class="w-full max-w-3xl bg-white p-6 md:p-10 rounded-2xl container-card mt-12 md:mt-20">
+            <header class="text-center mb-8">
+                <h1 class="text-5xl font-black text-blue-900 tracking-tight">Virtual Triage</h1>
+                <p class="text-xl text-gray-500 mt-1">Symptom Analysis and Urgency Score</p>
+            </header>
+
+            <div id="disclaimer" class="bg-amber-50 border-l-4 border-amber-500 text-amber-900 p-4 rounded-xl mb-8 shadow-inner">
+                <h2 class="font-extrabold text-base mb-2 flex items-center">
+                    <svg class="w-6 h-6 mr-2 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                    Crucial Medical Disclaimer
+                </h2>
+                <p class="text-sm">I am an AI and **NOT** a doctor. This information is for general educational purposes only. **Always consult a real licensed medical professional for diagnosis, advice, and treatment.**</p>
+            </div>
+            
+            <main>
+                <div class="mb-8 border border-gray-200 p-6 rounded-xl shadow-inner bg-gray-50">
+                    <h3 class="text-xl font-bold text-gray-800 mb-4">Your Medical Profile (Used for Context)</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div><label for="profileAge" class="block text-sm font-medium text-gray-700">Age</label><input type="number" id="profileAge" class="w-full p-2 border border-gray-300 rounded-lg" value="35"></div>
+                        <div><label for="profileSex" class="block text-sm font-medium text-gray-700">Sex</label><select id="profileSex" class="w-full p-2 border border-gray-300 rounded-lg"><option>Male</option><option selected>Female</option><option>Other</option></select></div>
+                        <div><label for="profileConditions" class="block text-sm font-medium text-gray-700">Pre-existing Conditions</label><input type="text" id="profileConditions" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="e.g., Asthma, Diabetes" value="Mild Allergies"></div>
+                    </div>
+                </div>
+
+                <div class="mb-8">
+                    <label for="symptomsInput" class="block text-xl font-bold text-blue-900 mb-3">Describe your symptoms in detail:</label>
+                    <textarea id="symptomsInput" rows="4" placeholder="I have a sharp pain in my lower right abdomen that started this morning. I also feel slightly nauseous." class="w-full p-4 border-2 border-blue-200 rounded-xl focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition"></textarea>
+                </div>
+
+                <div class="flex space-x-4 mb-10">
+                    <button id="submitBtn" onclick="window.submitSymptoms()" disabled
+                        class="flex-grow flex items-center justify-center py-3 text-white font-extrabold rounded-xl shadow-lg transition duration-300 disabled:opacity-50">
+                        <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.398a12 12 0 00-16.818 0 12 12 0 0016.818 0z"></path></svg>
+                        <span id="submitBtnText">Get AI Triage</span>
+                    </button>
+                    <button id="sttBtn" onclick="window.startSpeechRecognition()" 
+                            class="w-12 h-12 bg-gray-200 hover:bg-gray-300 text-gray-600 rounded-xl flex items-center justify-center shadow-md transition duration-200" title="Speak Symptoms">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7v2m0 0v2m0-2v-2m0 2H12a2 2 0 00-2 2v2a2 2 0 002 2z"></path></svg>
+                    </button>
+                </div>
+
+                <div id="responseContainer" class="p-6 rounded-2xl border-2 border-blue-100 shadow-xl min-h-[200px] bg-white">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 id="responseTitle" class="text-3xl font-bold text-blue-900">VitaCare Analysis</h2>
+                        <button id="ttsBtn" onclick="window.readResponseText()" class="w-10 h-10 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-full flex items-center justify-center shadow-md transition duration-200" title="Read Analysis Aloud" disabled>
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.536-9.572a9 9 0 010 12.728M21 12a12 12 0 00-16.702-8.484l-2.56-1.92A14.981 14.981 0 0112 3a9 9 0 019 9zm-2.001 0a7 7 0 00-11.789-5.123L5 6.707A5 5 0 0110 12a5 5 0 01-5 5.293L4.212 17.12a7 7 0 0011.789-5.12z"></path></svg>
+                        </button>
+                    </div>
+
+                    <div id="triageScoreDisplay" class="triage-score-display hidden">
+                        <span id="triageIcon"></span>
+                        <div class="flex-grow">
+                            <span class="text-sm block">Triage Urgency:</span>
+                            <strong id="triageScoreText" class="text-xl"></strong>
+                        </div>
+                        <p id="triageRecommendation" class="text-base text-right max-w-[50%]"></p>
+                    </div>
+                    
+                    <div id="loadingIndicator" class="loading-dots flex justify-center space-x-2 my-8 hidden">
+                        <span class="block w-3 h-3 bg-blue-500 rounded-full"></span>
+                        <span class="block w-3 h-3 bg-blue-500 rounded-full"></span>
+                        <span class="block w-3 h-3 bg-blue-500 rounded-full"></span>
+                    </div>
+
+                    <div id="responseText" class="text-gray-700 leading-relaxed space-y-4">
+                        <p class="text-gray-500 italic">Submit your symptoms to receive an AI-generated analysis and triage score.</p>
+                    </div>
+                    
+                    <div id="sourcesContainer" class="mt-6 pt-4 border-t border-gray-100 hidden">
+                        <p class="text-xs font-semibold text-gray-500">Information Sources: AI Knowledge Base & Simulated Data</p>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+    
+    <div id="medication-content" class="app-section min-h-screen p-4 sm:p-8">
+        <div id="app" class="max-w-7xl mx-auto relative z-10 py-12">
+            <header class="mb-8 p-4 gradient-bg text-white card flex justify-between items-center shadow-lg">
+                <h1 class="text-3xl font-extrabold tracking-tight">Medication Manager</h1>
+                <div class="text-sm font-medium text-white/80">User ID: <span id="current-user-id">N/A</span></div>
+            </header>
+
+            <div class="grid lg:grid-cols-3 gap-8">
+                <div class="lg:col-span-1 space-y-6">
+                    <div class="card p-6">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4">Add Medication</h2>
+                        <div class="flex space-x-3">
+                            <input type="text" id="new-med-input" placeholder="e.g., Aspirin, Metformin" 
+                                class="flex-grow p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400">
+                            <button class="flex-shrink-0 gradient-bg text-white p-2 rounded-lg hover:bg-emerald-600 transition duration-150" onclick="window.addMedication()">
+                                <i data-lucide="plus" class="w-5 h-5"></i> 
+                            </button>
+                        </div>
+                        <h3 class="text-lg font-semibold mt-6 mb-3 text-gray-700">My Current Medications:</h3>
+                        <div id="medication-list" class="max-h-64 overflow-y-auto space-y-2 p-2 bg-gray-50 rounded-lg border border-gray-100">
+                            <p class="text-gray-400 text-sm" id="meds-status">Loading medications...</p>
+                        </div>
+                    </div>
+                    
+                    <div class="card p-6 text-center">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4">Export Records</h2>
+                        <p class="text-sm text-gray-600 mb-4">Generate a printable summary of your current medication list.</p>
+                        <button onclick="window.generatePDF()" class="w-full py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg flex items-center justify-center transition disabled:opacity-50" id="pdf-button">
+                            <i data-lucide="file-text" class="w-5 h-5 mr-2"></i> 
+                            Generate Medication PDF
+                        </button>
+                    </div>
+                </div>
+
+                <div class="lg:col-span-2 space-y-6">
+                    <div class="card p-6">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="alert-triangle" class="w-6 h-6 mr-2 text-red-500"></i>
+                            Drug Interaction Checker
+                        </h2>
+                        <p class="text-gray-600 mb-4">Analyze your current list for potential major or moderate drug-drug interactions using our AI pharmacist.</p>
+                        <div class="flex space-x-3">
+                            <button onclick="window.runInteractionCheck()" class="flex-grow py-3 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg flex items-center justify-center transition disabled:opacity-50" id="interaction-button">
+                                <i data-lucide="check-circle" class="w-5 h-5 mr-2"></i> 
+                                Run Interaction Check
+                            </button>
+                            <button onclick="window.clearAIResponse('interaction-content')" class="py-3 px-4 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition" id="clear-button">
+                                <i data-lucide="x" class="w-5 h-5"></i>
+                            </button>
+                        </div>
+                        
+                        <div id="interaction-content" class="mt-6">
+                            <p class="text-gray-400 italic text-sm">Click 'Run Interaction Check' to analyze your medications.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // --- MASTER NAVIGATION ---
+        const sections = document.querySelectorAll('.app-section');
+        window.showSection = function(id) {
+            sections.forEach(section => {
+                section.classList.remove('active');
+                if (section.id === id) {
+                    section.classList.add('active');
+                }
+            });
+            // Re-run Lucide icons for the newly visible section if needed
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+            // If navigating to a Firebase-dependent section, ensure initialization
+            if (['auth-section', 'medication-content'].includes(id) && !window.isAuthReady) {
+                window.initFirebaseApp();
+            }
+            window.scrollTo(0, 0); // Scroll to top on section change
+            // Run scroll animation check for index (8).html content if active
+            if (id === 'index8-content' && window.checkVisibility) {
+                window.checkVisibility();
+            }
+        }
+        
+        // --- THREE.JS BACKGROUND LOGIC (from index (8).html) ---
+        let scene, camera, renderer, particles, particleGeometry, particleMaterial;
+        const initThreeJS = () => {
+            const container = document.getElementById('three-bg');
+            if (!container) return; // Exit if canvas is not present in the active section
+
+            const sizes = { width: window.innerWidth, height: window.innerHeight };
+
+            // 1. Scene
+            scene = new THREE.Scene();
+            
+            // 2. Camera
+            camera = new THREE.PerspectiveCamera(75, sizes.width / sizes.height, 0.1, 100);
+            camera.position.z = 2; // Pull back camera for better view
+            scene.add(camera);
+
+            // 3. Renderer
+            renderer = new THREE.WebGLRenderer({ canvas: container, antialias: true, alpha: true });
+            renderer.setSize(sizes.width, sizes.height);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+            // 4. Particles (Simplified for general background use)
+            const particleCount = 1000;
+            const positions = new Float32Array(particleCount * 3);
+            const colors = new Float32Array(particleCount * 3);
+            const colorA = new THREE.Color(0x818CF8); // Blue-Violet
+            const colorB = new THREE.Color(0x34D399); // Mint-Green
+
+            for (let i = 0; i < particleCount * 3; i += 3) {
+                positions[i] = (Math.random() - 0.5) * 10;
+                positions[i + 1] = (Math.random() - 0.5) * 10;
+                positions[i + 2] = (Math.random() - 0.5) * 10;
+                
+                // Interpolate colors
+                const t = Math.random();
+                const color = colorA.clone().lerp(colorB, t);
+                colors[i] = color.r;
+                colors[i + 1] = color.g;
+                colors[i + 2] = color.b;
+            }
+
+            particleGeometry = new THREE.BufferGeometry();
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            particleGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            particleMaterial = new THREE.PointsMaterial({
+                size: 0.05,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.7,
+                blending: THREE.AdditiveBlending,
+            });
+
+            particles = new THREE.Points(particleGeometry, particleMaterial);
+            scene.add(particles);
+
+            // 5. Handle resizing
+            window.addEventListener('resize', onWindowResize, false);
+        };
+
+        const onWindowResize = () => {
+            const sizes = { width: window.innerWidth, height: window.innerHeight };
+            camera.aspect = sizes.width / sizes.height;
+            camera.updateProjectionMatrix();
+            renderer.setSize(sizes.width, sizes.height);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        };
+
+        let clock = new THREE.Clock();
+        const animate = () => {
+            requestAnimationFrame(animate);
+
+            const elapsedTime = clock.getElapsedTime();
+
+            // Subtle rotation of the particle field
+            if (particles) {
+                particles.rotation.y = elapsedTime * 0.02;
+                particles.rotation.x = elapsedTime * 0.01;
+            }
+
+            renderer.render(scene, camera);
+        };
+        
+        // --- INDEX (8).HTML SCROLL ANIMATION ---
+        const scrollSections = document.querySelectorAll('.content-section');
+        window.checkVisibility = () => {
+            const triggerBottom = window.innerHeight * 0.8;
+            scrollSections.forEach(section => {
+                const sectionTop = section.getBoundingClientRect().top;
+                if (sectionTop < triggerBottom) {
+                    section.classList.add('visible');
+                } else {
+                    section.classList.remove('visible');
+                }
+            });
+        };
+        
+        // --- SECURE AUTH LOGIC (index (1).html) ---
+        let isLoginMode = true;
+        const authTitleEl = document.getElementById('auth-title');
+        const primaryBtnTextEl = document.getElementById('primary-auth-btn-text');
+        const switchLinkEl = document.getElementById('switch-auth-mode');
+        const authMessageEl = document.getElementById('auth-message');
+        const loginFormContainer = document.getElementById('login-form-container');
+        const welcomeMessageContainer = document.getElementById('welcome-message');
+        const primaryAuthBtn = document.getElementById('primary-auth-btn');
+        const googleBtn = document.getElementById('google-btn');
+
+        const updateMessage = (message, colorClass) => {
+            if (authMessageEl) {
+                authMessageEl.innerHTML = `<p class="font-semibold ${colorClass}">${message}</p>`;
+            }
+        };
+
+        window.toggleLoading = (isLoading, buttonId) => {
+            const btn = document.getElementById(buttonId || 'primary-auth-btn');
+            const spinner = document.getElementById(buttonId ? `${buttonId}-spinner` : 'primary-auth-spinner');
+            
+            if (isLoading) {
+                btn.disabled = true;
+                if (spinner) spinner.classList.remove('hidden');
+                btn.querySelector('span').classList.add('opacity-0');
+            } else {
+                btn.disabled = false;
+                if (spinner) spinner.classList.add('hidden');
+                btn.querySelector('span').classList.remove('opacity-0');
+            }
+            
+            // Toggle Google button as well if primary is toggled
+            if (!buttonId) {
+                 googleBtn.disabled = isLoading;
+                 document.getElementById('google-btn-spinner').classList.toggle('hidden', !isLoading);
+                 document.getElementById('google-btn-text').classList.toggle('opacity-0', isLoading);
+            }
+        };
+
+        window.showSuccessScreen = (user, isAutoLogin = false) => {
+            loginFormContainer.classList.add('hidden');
+            welcomeMessageContainer.classList.remove('hidden');
+
+            const displayName = user.displayName || (user.email ? user.email.split('@')[0] : 'Guest');
+            const personalizationText = isAutoLogin 
+                ? `You are automatically logged in as ${user.email}` 
+                : `Welcome back, ${user.email}`;
+
+            document.getElementById('welcome-title').textContent = `Welcome, ${displayName}!`;
+            document.getElementById('welcome-subtitle').textContent = personalizationText;
+        };
+        
+        window.showLoginForm = () => {
+             loginFormContainer.classList.remove('hidden');
+             welcomeMessageContainer.classList.add('hidden');
+             authMessageEl.innerHTML = 'Email/Password Test (Login Only): <b>test@vitadoc.com</b> / <b>password123</b>';
+        }
+
+        window.toggleAuthMode = (mode) => {
+            isLoginMode = mode === 'login';
+            if (authTitleEl && primaryBtnTextEl && switchLinkEl) {
+                authTitleEl.textContent = isLoginMode ? 'Login to VitaDoc' : 'Create a VitaDoc Account';
+                primaryBtnTextEl.textContent = isLoginMode ? 'Sign In' : 'Register';
+                switchLinkEl.innerHTML = isLoginMode
+                    ? `New patient? <a href="#" onclick="window.toggleAuthMode('signup'); return false;" class="font-bold text-green-400 hover:text-green-300">Create an Account</a>`
+                    : `Already have an account? <a href="#" onclick="window.toggleAuthMode('login'); return false;" class="font-bold text-green-400 hover:text-green-300">Sign In</a>`;
+            }
+            // Clear fields for registration/login
+            document.getElementById('email').value = "";
+            document.getElementById('password').value = "";
+            updateMessage("Please enter your credentials.", 'text-gray-400');
+        };
+
+        window.handlePrimaryAuth = () => {
+            if (isLoginMode) {
+                window.loginUser();
+            } else {
+                window.registerUser();
+            }
+        };
+
+        window.loginUser = async () => {
+            if (!window.isAuthReady || !window.auth) { updateMessage("System not ready. Please wait for initialization.", 'text-yellow-400'); return; }
+            let email = document.getElementById('email').value;
+            let password = document.getElementById('password').value;
+            if (!email || !password) { updateMessage("Please fill in both email and password.", 'text-red-400'); return; }
+
+            window.toggleLoading(true, 'primary-auth-btn');
+            updateMessage("Signing in...", 'text-green-300');
+            try {
+                const result = await window.signInWithEmailAndPassword(window.auth, email, password);
+                window.showSuccessScreen(result.user);
+            } catch (error) {
+                console.error("Login Failed:", error);
+                let message;
+                switch (error.code) {
+                    case 'auth/user-not-found':
+                    case 'auth/wrong-password':
+                        message = "Invalid email or password."; break;
+                    case 'auth/invalid-email':
+                        message = "Invalid email format."; break;
+                    default:
+                        message = `Login failed: ${error.message}`;
+                }
+                updateMessage(message, 'text-red-400');
+            } finally {
+                window.toggleLoading(false, 'primary-auth-btn');
+            }
+        };
+
+        window.registerUser = async () => {
+            if (!window.isAuthReady || !window.auth) { updateMessage("System not ready. Please wait for initialization.", 'text-yellow-400'); return; }
+            let email = document.getElementById('email').value;
+            let password = document.getElementById('password').value;
+            if (!email || !password) { updateMessage("Please fill in both email and password.", 'text-red-400'); return; }
+            if (password.length < 6) { updateMessage("Password must be at least 6 characters long.", 'text-red-400'); return; }
+
+            window.toggleLoading(true, 'primary-auth-btn');
+            updateMessage("Registering account...", 'text-green-300');
+            try {
+                const result = await window.createUserWithEmailAndPassword(window.auth, email, password);
+                window.showSuccessScreen(result.user);
+            } catch (error) {
+                console.error("Registration Failed:", error);
+                let message;
+                switch (error.code) {
+                    case 'auth/email-already-in-use':
+                        message = "This email is already registered. Try signing in."; break;
+                    case 'auth/weak-password':
+                        message = "Password is too weak. Must be at least 6 characters."; break;
+                    default:
+                        message = `Registration failed: ${error.message}`;
+                }
+                updateMessage(message, 'text-red-400');
+            } finally {
+                window.toggleLoading(false, 'primary-auth-btn');
+            }
+        };
+
+        window.signInWithGoogle = async () => {
+            if (!window.isAuthReady || !window.auth) { updateMessage("System not ready. Please wait for initialization.", 'text-yellow-400'); return; }
+
+            window.toggleLoading(true, 'google-btn');
+            updateMessage("Signing in with Google...", 'text-green-300');
+            try {
+                const provider = new window.GoogleAuthProvider();
+                const result = await window.signInWithPopup(window.auth, provider);
+                window.showSuccessScreen(result.user);
+            } catch (error) {
+                console.error("Google Login Failed:", error);
+                let message = `Google login failed: ${error.message}`;
+                updateMessage(message, 'text-red-400');
+            } finally {
+                window.toggleLoading(false, 'google-btn');
+            }
+        };
+        
+        // --- CHATBOT LOGIC (chatbot.html) ---
+        const chatHistoryElement = document.getElementById('chat-history');
+        const userInputElement = document.getElementById('user-input-chat');
+        const sendButton = document.getElementById('send-button');
+        const loadingIndicatorChat = document.getElementById('loading-indicator');
+
+        const safeUpdateChatText = (element, text) => {
+            if (element) element.textContent = text;
+        };
+
+        const addMessageToChat = (text, type) => {
+            const messageWrapper = document.createElement('div');
+            messageWrapper.className = `flex ${type === 'user' ? 'justify-end' : 'justify-start'}`;
+
+            const messageBubble = document.createElement('div');
+            messageBubble.className = `${type === 'user' ? 'chat-bubble-user' : 'chat-bubble-ai'} p-3 max-w-xs md:max-w-md`;
+
+            if (type === 'ai') {
+                const assistantName = document.createElement('p');
+                assistantName.className = 'font-semibold text-teal-400';
+                assistantName.textContent = 'Assistant';
+                messageBubble.appendChild(assistantName);
+            }
+            
+            const messageText = document.createElement('p');
+            // Simple markdown to HTML conversion for bold text
+            messageText.innerHTML = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); 
+
+            messageBubble.appendChild(messageText);
+            messageWrapper.appendChild(messageBubble);
+            chatHistoryElement.appendChild(messageWrapper);
+
+            // Scroll to bottom
+            chatHistoryElement.scrollTop = chatHistoryElement.scrollHeight;
+        };
+
+        /** Main function to send the user query and provide a simulated response. */
+        window.sendMessage = async function() {
+            const userQuery = userInputElement.value.trim();
+            if (!userQuery) return;
+
+            // 1. Display user message
+            addMessageToChat(userQuery, 'user');
+            userInputElement.value = '';
+            userInputElement.disabled = true;
+            sendButton.disabled = true;
+            loadingIndicatorChat.classList.remove('hidden');
+
+            // 2. Simulate AI response delay
+            await new Promise(resolve => setTimeout(resolve, 1500)); 
+
+            // --- SIMULATION LOGIC ---
+            let responseText = "";
+            const query = userQuery.toLowerCase();
+            
+            try {
+                if (query.includes('sleep') || query.includes('insomnia')) {
+                    responseText = "Improving sleep hygiene involves maintaining a consistent sleep schedule and limiting screen time before bed. You might also want to try a relaxing routine before sleep, like meditation.";
+                } else if (query.includes('symptoms') || query.includes('diagnose')) {
+                    responseText = "I am a helpful assistant and **not a diagnostic tool**. For any symptoms or diagnosis, please use the **Virtual Triage** feature or consult a qualified healthcare professional immediately.";
+                } else if (query.includes('medication')) {
+                    responseText = "I can't check medication interactions here, but please use the dedicated **Medication Manager** section to safely track your list and run a comprehensive drug interaction check.";
+                } else {
+                    responseText = "I cannot provide medical advice. Remember that balanced nutrition and regular exercise are key components of well-being. Please ask a general health question, but always refer to a professional doctor for diagnosis or treatment.";
+                }
+            } catch (error) {
+                console.error("Simulation error:", error);
+                responseText = "An internal simulation error occurred.";
+            }
+
+            // 3. Update chat history and UI
+            addMessageToChat(responseText, 'ai');
+
+            // 4. Re-enable UI
+            sendButton.disabled = false;
+            userInputElement.disabled = false;
+            loadingIndicatorChat.classList.add('hidden');
+            userInputElement.focus();
+        };
+
+        // Chat input event listener for Enter key
+        if (userInputElement) {
+             userInputElement.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter' && !sendButton.disabled && !userInputElement.disabled) {
+                    window.sendMessage();
+                }
+            });
+        }
+        
+        // --- VIRTUAL DOCTOR LOGIC (virtual doctor.html) ---
+        const symptomsInput = document.getElementById('symptomsInput');
+        const submitBtn = document.getElementById('submitBtn');
+        const submitBtnText = document.getElementById('submitBtnText');
+        const ttsBtn = document.getElementById('ttsBtn');
+        const responseText = document.getElementById('responseText');
+        const loadingIndicatorDoctor = document.getElementById('loadingIndicator');
+        const triageScoreDisplay = document.getElementById('triageScoreDisplay');
+        const triageScoreText = document.getElementById('triageScoreText');
+        const triageIcon = document.getElementById('triageIcon');
+        const triageRecommendation = document.getElementById('triageRecommendation');
+        const sourcesContainer = document.getElementById('sourcesContainer');
+
+        const getProfileContext = () => {
+            const age = document.getElementById('profileAge').value;
+            const sex = document.getElementById('profileSex').value;
+            const conditions = document.getElementById('profileConditions').value;
+            return `User Profile: Age=${age}, Sex=${sex}, Pre-existing Conditions=${conditions}.`;
+        };
+
+        function formatMarkdownToHtml(markdown) {
+            // Function to convert simple markdown to HTML, preserving existing styles and headings.
+            let html = markdown.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Bold
+            // Simple list item conversion
+            html = html.split('\n').map(line => {
+                const trimmedLine = line.trim();
+                if (trimmedLine.match(/^\d+\.\s/)) {
+                    return `<li>${trimmedLine.replace(/^\d+\.\s*/, '').trim()}</li>`;
+                }
+                if (trimmedLine.match(/^[-\*]\s/)) {
+                    return `<li>${trimmedLine.replace(/^[-\*]\s*/, '').trim()}</li>`;
+                }
+                return `<p>${trimmedLine}</p>`;
+            }).join('');
+            
+            // Re-wrap lists where necessary
+            html = html.replace(/<p><\/p>/g, '').replace(/(<\/p><li>)/g, '<li>').replace(/(<li><p>)/g, '<li>').replace(/<\/li><p>/g, '</li>');
+            html = html.replace(/<\/li><li>/g, ''); // Fix for list joining
+
+            return html;
+        }
+
+        const updateTriageDisplay = (score, recommendation) => {
+            triageScoreDisplay.classList.remove('score-red', 'score-yellow', 'score-green', 'hidden');
+            triageIcon.innerHTML = '';
+            
+            let iconSvg, scoreClass;
+            switch (score.toUpperCase()) {
+                case 'RED':
+                    scoreClass = 'score-red';
+                    iconSvg = `<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>`;
+                    break;
+                case 'YELLOW':
+                    scoreClass = 'score-yellow';
+                    iconSvg = `<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>`;
+                    break;
+                case 'GREEN':
+                default:
+                    scoreClass = 'score-green';
+                    iconSvg = `<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>`;
+                    break;
+            }
+            
+            triageScoreDisplay.classList.add(scoreClass);
+            triageScoreText.textContent = score.toUpperCase();
+            triageRecommendation.textContent = recommendation;
+            triageIcon.innerHTML = iconSvg;
+        }
+        
+        // Simulated API Response Structure
+        const mockResponses = [
+            {
+                symptoms: "sharp pain lower right abdomen",
+                aiResponse: "This is not a medical diagnosis—only informational guidance. Always consult a licensed medical professional.\n\n## Summary\nThe sharp pain in the lower right abdomen, combined with nausea, is a concerning constellation of symptoms that warrants medical evaluation.\n\n## Possible Causes\n1.  **Appendicitis**: The most common and serious concern for this location and symptom profile. Requires immediate medical attention.\n2.  **Kidney Stones**: Pain can be severe and radiate. Often accompanied by back pain.\n3.  **Ovarian Cyst (Female)**: A possibility depending on the menstrual cycle.\n\n## Recommended Actions\nSeek emergency care immediately. Do not eat or drink anything until a doctor can evaluate you. Do not take pain medication as it can mask symptoms.",
+                triageScore: "RED",
+                recommendation: "Seek emergency care immediately (Call 911 or local equivalent)."
+            },
+            {
+                symptoms: "sore throat and mild fever",
+                aiResponse: "This is not a medical diagnosis—only informational guidance. Always consult a licensed medical professional.\n\n## Summary\nA sore throat and mild fever are classic symptoms of many viral or bacterial infections, most commonly the common cold or a mild flu.\n\n## Possible Causes\n1.  **Common Cold/Flu**: Most likely a viral infection.\n2.  **Strep Throat**: A bacterial infection that typically presents with a very sore throat.\n3.  **Tonsillitis**: Inflammation of the tonsils.\n\n## Recommended Actions\nRest, drink plenty of fluids, and monitor your temperature. A YELLOW triage score is given to encourage consulting a primary care doctor within 24-48 hours if symptoms worsen.",
+                triageScore: "YELLOW",
+                recommendation: "Contact your primary care physician within 24-48 hours."
+            },
+            {
+                symptoms: "runny nose and slight cough",
+                aiResponse: "This is not a medical diagnosis—only informational guidance. Always consult a licensed medical professional.\n\n## Summary\nA runny nose and a slight, non-productive cough typically indicate a mild upper respiratory viral infection, such as the common cold, which is self-limiting and requires supportive care.\n\n## Possible Causes\n1.  **Common Cold (Viral Rhinitis)**: The most probable cause.\n2.  **Allergies**: Especially if symptoms are seasonal and accompanied by itchy eyes.\n\n## Recommended Actions\nFocus on self-care and symptom relief. You do not need to seek urgent care.",
+                triageScore: "GREEN",
+                recommendation: "Continue self-care and monitor symptoms. No urgent action required."
+            }
+        ];
+        
+        window.submitSymptoms = async () => {
+            const symptoms = symptomsInput.value.trim();
+            if (!symptoms) return;
+
+            // 1. Update UI to loading state
+            responseText.innerHTML = '';
+            sourcesContainer.classList.add('hidden');
+            loadingIndicatorDoctor.classList.remove('hidden');
+            submitBtn.disabled = true;
+            ttsBtn.disabled = true;
+            triageScoreDisplay.classList.add('hidden');
+            
+            // 2. Simulate API Call/AI processing
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // 3. Select Mock Response
+            const lowCaseSymptoms = symptoms.toLowerCase();
+            let mockData = mockResponses.find(m => lowCaseSymptoms.includes(m.symptoms)) || mockResponses[2]; // Default to GREEN if no match
+
+            // 4. Extract and Parse Simulated Response
+            const aiText = mockData.aiResponse;
+            const triageData = {
+                score: mockData.triageScore,
+                recommendation: mockData.recommendation
+            };
+
+            // 5. Display AI text and Triage Score
+            responseText.innerHTML = formatMarkdownToHtml(aiText);
+            ttsBtn.disabled = false;
+            updateTriageDisplay(triageData.score, triageData.recommendation);
+            
+            // 6. Update UI to completion state
+            loadingIndicatorDoctor.classList.add('hidden');
+            submitBtn.disabled = false;
+            sourcesContainer.classList.remove('hidden');
+        };
+        
+        // Text-to-Speech Simulation (Dummy function - TTS functionality is typically a server-side feature)
+        window.readResponseText = async function() {
+             alert("Text-to-Speech functionality is simulated. In a live environment, this would read the analysis text aloud.");
+             const textToRead = responseText.textContent;
+             console.log("Simulating reading aloud:", textToRead);
+        };
+        
+        // Speech-to-Text Simulation
+        window.startSpeechRecognition = function() {
+             alert("Speech-to-Text functionality is simulated. In a live environment, this would start listening for your voice input and populate the symptoms box.");
+             symptomsInput.value = "Simulated symptom: I have a mild headache and feel a bit dizzy.";
+             submitBtn.disabled = false;
+        };
+
+        // --- MEDICATION MANAGER LOGIC (medication manager (2).html) ---
+        window.medications = []; // Local array to hold meds
+
+        const medicationListEl = document.getElementById('medication-list');
+        const currentUserEl = document.getElementById('current-user-id');
+        const interactionContentEl = document.getElementById('interaction-content');
+
+        const safeUpdateText = (id, text) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = text;
+        };
+
+        const renderAIResponse = (containerId, message, isError = false) => {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            
+            // Simple markdown to HTML conversion for bold
+            const formattedMessage = message.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); 
+
+            const resultEl = document.createElement('div');
+            resultEl.className = `ai-result ${isError ? 'error' : 'success'} shadow-md`;
+            resultEl.innerHTML = `<p class="text-sm">${formattedMessage}</p>`;
+            
+            // Clear previous content
+            container.innerHTML = ''; 
+            container.appendChild(resultEl);
+        };
+
+        const renderMedications = () => {
+            if (!medicationListEl) return;
+            medicationListEl.innerHTML = '';
+            
+            if (window.medications.length === 0) {
+                medicationListEl.innerHTML = '<p class="text-gray-400 text-sm p-3" id="meds-status">No medications added yet.</p>';
+                return;
+            }
+
+            window.medications.forEach(med => {
+                const item = document.createElement('div');
+                item.className = 'flex justify-between items-center bg-white p-3 rounded-xl border border-gray-200 hover:bg-emerald-50 transition duration-150';
+                item.innerHTML = `
+                    <span class="text-sm font-medium text-gray-700 truncate">${med.name}</span>
+                    <button class="text-red-400 hover:text-red-600 transition duration-150" onclick="window.removeMedication('${med.id}', '${med.name.replace(/'/g, "\\'")}')">
+                        <i data-lucide="x-circle" class="w-5 h-5"></i>
+                    </button>
+                `;
+                medicationListEl.appendChild(item);
+            });
+            
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+        };
+
+        window.listenForMedications = () => {
+             safeUpdateText('current-user-id', window.userId);
+             if (window.useLocalStorage) {
+                 const storedMeds = JSON.parse(sessionStorage.getItem('medications') || '[]');
+                 window.medications = storedMeds;
+                 renderMedications();
+                 safeUpdateText('meds-status', 'Loaded in Local Mode.');
+                 return;
+             }
+             
+             // Firebase Mode (Simulated, as we don't have a real config)
+             safeUpdateText('meds-status', 'Firebase Mode Active (Data persistence is only on the server, simulation here).');
+             window.medications = [
+                 { id: 'sim1', name: 'Aspirin 81mg' },
+                 { id: 'sim2', name: 'Metformin 500mg' }
+             ];
+             renderMedications();
+        };
+
+        window.addMedication = async function() {
+            const input = document.getElementById('new-med-input');
+            const medName = input.value.trim();
+            if (!medName) return;
+
+            if (window.medications.some(m => m.name.toLowerCase() === medName.toLowerCase())) {
+                renderAIResponse('interaction-content', `Medication **${medName}** is already in your list.`, true);
+                input.value = '';
+                return;
+            }
+            input.value = '';
+
+            const newMed = { name: medName, id: window.useLocalStorage ? crypto.randomUUID() : 'sim' + (Math.random() * 1000).toFixed(0) };
+            window.medications.push(newMed);
+            
+            if (window.useLocalStorage) {
+                sessionStorage.setItem('medications', JSON.stringify(window.medications));
+            } else {
+                 // Simulate Firebase add
+            }
+
+            renderMedications();
+            renderAIResponse('interaction-content', `**${medName}** has been added to your list.`);
+        };
+
+        window.removeMedication = async function(id, name) {
+            window.medications = window.medications.filter(m => m.id !== id);
+            
+            if (window.useLocalStorage) {
+                sessionStorage.setItem('medications', JSON.stringify(window.medications));
+            } else {
+                // Simulate Firebase delete
+            }
+
+            renderMedications();
+            renderAIResponse('interaction-content', `**${name}** has been removed from your list.`);
+        };
+        
+        window.clearAIResponse = (containerId) => {
+             const container = document.getElementById(containerId);
+             if (container) container.innerHTML = '<p class="text-gray-400 italic text-sm">Click \'Run Interaction Check\' to analyze your medications.</p>';
+        };
+
+        window.runInteractionCheck = async function() {
+            if (window.medications.length < 2) {
+                renderAIResponse('interaction-content', 'Please add at least two medications to run a meaningful interaction check.', true);
+                return;
+            }
+            
+            const button = document.getElementById('interaction-button');
+            button.disabled = true;
+            button.innerHTML = '<div class="spinner w-5 h-5 mr-2"></div> Analyzing...';
+
+            // Simulate AI call/API delay
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            const medsList = window.medications.map(m => m.name).join(', ');
+            let resultMessage;
+            
+            // Simple simulation logic
+            if (medsList.toLowerCase().includes('aspirin') && medsList.toLowerCase().includes('metformin')) {
+                 resultMessage = `**Major Interaction Found:** The combination of **Aspirin** and **Metformin** can potentially increase the risk of lactic acidosis (a serious side effect of Metformin) or increase the risk of hypoglycemia (low blood sugar). **Caution:** Discuss this combination with your doctor immediately.`;
+            } else if (medsList.toLowerCase().includes('ibuprofen') && medsList.toLowerCase().includes('lisinopril')) {
+                 resultMessage = `**Moderate Interaction Found:** **Ibuprofen** (a type of NSAID) can reduce the effectiveness of blood pressure medications like **Lisinopril**. **Caution:** Monitor your blood pressure closely and consider acetaminophen instead of ibuprofen for pain relief. Consult your physician.`;
+            } else {
+                 resultMessage = `**No Major or Moderate Interactions Found** among your current list of medications: ${medsList}. Continue to take your medications as prescribed.`;
+            }
+
+            renderAIResponse('interaction-content', resultMessage);
+            
+            button.disabled = false;
+            button.innerHTML = '<i data-lucide="check-circle" class="w-5 h-5 mr-2"></i> Run Interaction Check';
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+        };
+
+        window.generatePDF = function() {
+            if (window.medications.length === 0) {
+                 alert("Cannot generate PDF. Please add at least one medication.");
+                 return;
+            }
+            
+            const listHtml = window.medications.map(m => `<li>${m.name}</li>`).join('');
+            
+            // Create a temporary HTML element for PDF generation
+            const element = document.createElement('div');
+            element.innerHTML = `
+                <div style="padding: 20px; font-family: 'Inter', sans-serif;">
+                    <h1 style="color: #059669; border-bottom: 2px solid #059669; padding-bottom: 10px;">VitaCare Medication Record</h1>
+                    <p style="margin-top: 15px;">Date: ${new Date().toLocaleDateString()}</p>
+                    <p>User ID: ${window.userId}</p>
+                    <h2 style="margin-top: 20px; color: #1f2937;">Current Medications (${window.medications.length} total):</h2>
+                    <ul style="list-style-type: disc; margin-left: 20px; margin-top: 10px;">${listHtml}</ul>
+                    <p style="margin-top: 30px; font-size: 10px; color: #6b7280;">Disclaimer: This list is for personal record-keeping only and is not a prescription. Always refer to your official prescription details.</p>
+                </div>
+            `;
+            
+            html2pdf().from(element).save('VitaCare_Medication_Record.pdf');
+        }
+
+        // --- GLOBAL INITIALIZATION ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // 1. Initialize Lucide icons
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+            
+            // 2. Initialize Three.js and animation
+            initThreeJS();
+            animate();
+            
+            // 3. Initialize Firebase/Auth (Only if the Auth/Medication section is active, otherwise rely on a click event)
+            // But we can enable buttons if not waiting for auth
+            primaryAuthBtn.disabled = false;
+            googleBtn.disabled = false;
+            
+            // 4. Initial check for index (8).html scroll animation
+            window.addEventListener('scroll', window.checkVisibility);
+            window.checkVisibility();
+            
+            // 5. Initialize Virtual Doctor button state
+            if (symptomsInput) {
+                symptomsInput.addEventListener('input', () => {
+                    submitBtn.disabled = symptomsInput.value.trim().length === 0;
+                });
+                submitBtn.disabled = symptomsInput.value.trim().length === 0;
+            }
+            if (ttsBtn) ttsBtn.disabled = true;
+            
+            // 6. Initialize Medication Manager
+            if (document.getElementById('medication-content').classList.contains('active')) {
+                 window.listenForMedications();
+            } else if (window.useLocalStorage) {
+                 // Even if not active, set up local storage fallback immediately if Firebase config is missing
+                 window.listenForMedications();
+                 safeUpdateText('current-user-id', 'N/A (Local Mode)');
+            }
+        });
+    </script>
+</body>
+</html>
